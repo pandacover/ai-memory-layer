@@ -1,7 +1,8 @@
 import uuid
+import os
 from typing import Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import EventSourceResponse
 from langchain_core.tools import tool
@@ -9,16 +10,15 @@ from langchain_ollama import ChatOllama
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
+from datetime import datetime
+from config import settings
 
-from raw_events import create_table, get_all_raw_events_desc, upsert_raw_event
+from memory import Memory
+from context_builder import ContextBuilder
 
 SystemPrompt = """
 - the tools you have access to
-    - retrieve_all_tool: retrieves all raw events from the database, including my information
-Rules
-- never return the raw data retrieved from the tool, ever
-- use the tool when you don't know the answer to the question
-- use the tool when you are to answer something specific from memory
+    - retrieve_memory: uses memories specific to given queries
 """
 
 session_id = str(uuid.uuid4())
@@ -33,9 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-create_table()
-
-
+# types
 class Message(BaseModel):
     role: Literal["human", "ai", "system", "tool"]
     content: str
@@ -45,53 +43,93 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[Message]
 
-class RetrieveMemoryTool(BaseModel):
-    query: str = Field(description="user query")
 
+# instances
+AIMemory = Memory()
+AIMemoryContextBuilder = ContextBuilder()
 
-@tool(args_schema=RetrieveMemoryTool)
-def retrieve_all_tool(query: str):
-    """Retrieve all raw events from the database."""
+# langgraph
 
-    events = get_all_raw_events_desc()
+# utils
 
-    event_content_vs_words = dict()
+def save_memory(messages: list[str]):
+    [human, ai] = messages
 
-    for i, event in enumerate(events):
-        event_content_vs_words[event["id"]] = {
-            "content": event["content"].split(" "),
-            "rank": i 
-        }
+    sanitized_messages = [
+        (
+            "system",
+            """
+            You are an expert observer and interpreter. Given a user query, you:
+            - infer correct observations limited to the informations provided, and don't overreach
+            - return only the observations that should be saved and discard the rest
+            - return only observations, separated by lines. No label or markdown is needed. Just plain string.
+            - if there's no good observation then you can ignore since you are not obliged to save anything
+            - provide distilled 0-N memories out of that given query.
 
-    query_list = query.split(" ")
+            For example:
+            query:
+                human: Hey dude, I am Luv. I am a software engineer.
+                ai: Hey Luv, nice to meet you.
 
-    sorted_events = sorted(events, key=lambda event: sum([event_content_vs_words[event["id"]]["content"].count(word) + (len(event_content_vs_words) - event_content_vs_words[event["id"]]["rank"]) for word in query_list]), reverse=True)
-
-    context = """"""
-
-    for i, event in enumerate(sorted_events[:5]):
-        context += f"""
-            [metadata]
-            message_id: {event["id"]}
-            author: {event["role"]}
-            rank: {i} (lesser is higher)
-            modified_at: {event['modified_at']}
-
-            [content]
-            {event["content"]}
+            good obsverations:
+                user name is Luv.
+                Luv is a software engineer.
+                Luv must like to talk about coding and technology in general.
             
-        """
-    return context
+            bad observations:
+                user greeted me with (hey dude) so he must be in a jolly mood.
+                hey dude is a positive greeting, so user must be a happy person.
+            """
+        ),
+        (
+            "human",
+            f"""
+            human: {human}
 
+            ai: {ai}
+            """
+        )
+    ]
+
+    resp = ollama.invoke(input=sanitized_messages)
+    observations = resp.content.split("\n")
+
+    ids, contents, metadatas = [], [], []
+
+    for obv in observations:
+        sanitized_obv = obv.strip()
+
+        if len(sanitized_obv) != 0:
+            ids.append(str(uuid.uuid4()))
+            contents.append(sanitized_obv)
+            metadatas.append({ "created_at": datetime.now().isoformat(), "modified_at": datetime.now().isoformat(), "type": "episodic" })
     
+    print(ids, contents, metadatas)
+
+    AIMemory.upsert(ids, contents, metadatas)
 
 
-tools = [retrieve_all_tool]
+# tools 
 
-base_ollama = ChatOllama(model="gemma4:e4b", reasoning=True)
+@tool
+def retrieve_memory(queries: list[str], metadatas:list[dict] = []):
+    """Retrive semantic memories"""
+
+    retrieved_memory = AIMemory.retrieve(queries=queries, metadatas=metadatas)
+    memory_context = AIMemoryContextBuilder.build(memories=retrieved_memory) 
+
+    return memory_context
+
+
+tools = [retrieve_memory]
+
+base_ollama = ChatOllama(model="nemotron-3-super:cloud", reasoning=True, base_url="https://ollama.com", client_kwargs={
+    "headers":{ "Authorization": f"Bearer {settings.ollama_api_key}" } 
+})
 ollama = base_ollama.bind_tools(tools)
 
 
+# nodes
 def agent(state: MessagesState):
     return {"messages": ollama.invoke(state["messages"])}
 
@@ -104,6 +142,7 @@ def should_continue(state: MessagesState):
     return END
 
 
+# builder
 builder = StateGraph(MessagesState)
 builder.add_node("agent", agent)
 builder.add_node("tools", ToolNode(tools))
@@ -115,8 +154,9 @@ builder.add_edge("tools", "agent")
 graph = builder.compile()
 
 
+# endpoint
 @app.post("/chat/stream")
-def chat_stream(req: ChatRequest):
+def chat_stream(req: ChatRequest, background_tasks: BackgroundTasks):
     messages = getattr(req, "messages", [])
     langgraph_messages = []
 
@@ -125,14 +165,8 @@ def chat_stream(req: ChatRequest):
     for message in messages:
         langgraph_messages.append({"role": message.role, "content": message.content})
     
+    global last_message
     last_message = messages[-1]
-
-    upsert_raw_event(
-        id=last_message.id if last_message.id else str(uuid.uuid4()),
-        role="human",
-        content=messages[-1].content,
-        session_id=session_id,
-    )
 
     def generate_tokens():
         final_message = ""
@@ -154,11 +188,9 @@ def chat_stream(req: ChatRequest):
                 print()
         
         if final_message:
-            upsert_raw_event(
-                id=str(uuid.uuid4()),
-                role="ai",
-                content=final_message,
-                session_id=session_id,
+            background_tasks.add_task(
+                save_memory,
+                [last_message.content, final_message]
             )
 
     return EventSourceResponse(generate_tokens(), media_type="text/plain")

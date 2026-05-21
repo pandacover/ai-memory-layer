@@ -1,0 +1,5 @@
+FROM chromadb/chroma:1.5.9
+
+VOLUME ["/data"]
+
+EXPOSE 8000
