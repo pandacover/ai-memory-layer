@@ -1,9 +1,11 @@
 import sqlite3
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-DB_PATH = Path(__file__).with_name("memory.sqlite3")
+from app.utils.datetime import utc_now_iso
+
+
+DB_PATH = Path(__file__).parents[2] / "memory.sqlite3"
 
 
 CREATE_RAW_EVENTS_TABLE_SQL = """
@@ -47,7 +49,7 @@ def upsert_raw_event(
     create_table(db_path)
 
     if modified_at is None:
-        modified_at = datetime.now().isoformat()
+        modified_at = utc_now_iso()
 
     if created_at is None:
         sql = """
@@ -98,8 +100,9 @@ def get_all_raw_events(db_path: str | Path = DB_PATH) -> list[dict[str, Any]]:
         ).fetchall()
         return [dict(row) for row in rows]
 
+
 def get_all_raw_events_desc(db_path: str | Path = DB_PATH) -> list[dict[str, Any]]:
-    """Return all raw events ordered by creation time."""
+    """Return all raw events ordered by modified time descending."""
     create_table(db_path)
 
     with get_connection(db_path) as conn:

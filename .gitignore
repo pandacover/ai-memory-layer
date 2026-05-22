@@ -34,3 +34,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+.env
+
+memory.sqlite3
