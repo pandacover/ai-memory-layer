@@ -10,7 +10,7 @@ class ContextBuilder:
             context_parts.append(f"""
 id: {memory_id}
 memory created at: {metadata["created_at"]}
-last recalled at: {metadata["modified_at"]}
+last recalled at: {metadata["last_accessed_at"]}
 type: {metadata["type"]}
 
 {value["content"]}

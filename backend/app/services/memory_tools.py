@@ -13,12 +13,12 @@ memory_context_builder = ContextBuilder()
 @tool
 def retrieve_memory(
     queries: list[str],
-    metadatas: list[MemoryMetadata] | None = None,
+    metadata: MemoryMetadata | None = None,
 ) -> str:
     """Retrieve semantic memories."""
 
     try:
-        retrieved_memory = memory_repository.retrieve(queries=queries, metadatas=metadatas)
+        retrieved_memory = memory_repository.retrieve(queries=queries, metadata=metadata)
     except (ConnectError, ConnectTimeout, TimeoutException) as exc:
         return f"Memory retrieval is temporarily unavailable: {exc}"
 

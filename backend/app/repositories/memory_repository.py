@@ -52,9 +52,9 @@ class MemoryRepository:
     def retrieve(
         self,
         queries: list[str],
-        metadatas: list[MemoryMetadata] | None = None,
+        metadata: MemoryMetadata | None = None,
     ) -> MemoryContext:
-        if not metadatas:
+        if not metadata:
             res = self.collection.query(
                 query_texts=queries,
                 n_results=DEFAULT_MEMORY_RESULT_COUNT,
@@ -63,9 +63,21 @@ class MemoryRepository:
             return self._build_context(res)
 
         else:
+            filters = [
+                {
+                    key: {
+                        "$eq": value
+                    }
+                }
+                for key, value in metadata.items()
+            ]
+
+            where = filters[0] if len(filters) == 1 else { "$and": filters }
+
             res = self.collection.query(
                 query_texts=queries,
                 n_results=DEFAULT_MEMORY_RESULT_COUNT,
+                where=where,
             )
 
             return self._build_context(res)

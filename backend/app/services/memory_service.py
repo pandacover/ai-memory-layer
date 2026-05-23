@@ -12,7 +12,7 @@ memory_repository = MemoryRepository()
 
 def build_memory_metadata() -> MemoryMetadata:
     now = utc_now_iso()
-    return {"created_at": now, "modified_at": now, "type": "episodic"}
+    return {"created_at": now, "last_accessed_at": now, "type": "episodic"}
 
 
 def save_memory(messages: list[str]) -> None:
